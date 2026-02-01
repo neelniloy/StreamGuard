@@ -1,0 +1,5 @@
+{
+  "name": "StreamGuard IPTV Player",
+  "description": "A client-side only, compliance-focused HLS player for testing stream functionality. No content included.",
+  "requestFramePermissions": []
+}
