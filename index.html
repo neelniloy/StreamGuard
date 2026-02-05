@@ -41,6 +41,19 @@
         background-color: #020617;
         color: white;
       }
+
+      /* Android TV / Keyboard Navigation Focus Styles */
+      :focus-visible {
+        outline: 3px solid #6366f1; /* Indigo-500 */
+        outline-offset: 2px;
+        z-index: 50;
+        border-radius: 4px;
+      }
+      
+      /* Ensure list items get proper focus highlighting */
+      button:focus-visible {
+        background-color: rgba(99, 102, 241, 0.2);
+      }
     </style>
   <script type="importmap">
 {
