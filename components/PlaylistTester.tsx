@@ -51,6 +51,18 @@ export const PlaylistTester: React.FC<PlaylistTesterProps> = ({
   const activeTests = useRef<number>(0);
   const stopRequested = useRef(false);
 
+  // Pagination State for high performance rendering of huge lists
+  const ITEMS_PER_PAGE = 50;
+  const [visibleCount, setVisibleCount] = useState(ITEMS_PER_PAGE);
+  const observerTarget = useRef<HTMLDivElement>(null);
+
+  // Quick O(1) key-value lookup map to completely bypass array scans (channels.find) under high concurrency testing
+  const channelsMap = useMemo(() => {
+    const map = new Map<string, Channel>();
+    channels.forEach(ch => map.set(ch.id, ch));
+    return map;
+  }, [channels]);
+
   // Stats
   const stats = useMemo(() => {
     const all = Object.values(results) as TestResult[];
@@ -71,7 +83,7 @@ export const PlaylistTester: React.FC<PlaylistTesterProps> = ({
       
       let hls: Hls | null = null;
       let timeout: any = null;
-
+ 
       const cleanup = () => {
         if (timeout) clearTimeout(timeout);
         if (hls) {
@@ -138,7 +150,7 @@ export const PlaylistTester: React.FC<PlaylistTesterProps> = ({
       const channelId = testingQueue.current.shift();
       if (!channelId) break;
 
-      const channel = channels.find(c => c.id === channelId);
+      const channel = channelsMap.get(channelId);
       if (!channel) continue;
 
       activeTests.current++;
@@ -166,7 +178,7 @@ export const PlaylistTester: React.FC<PlaylistTesterProps> = ({
         processQueue();
       });
     }
-  }, [channels, concurrency, testChannel]);
+  }, [channelsMap, concurrency, testChannel, setBadChannels, setResults]);
 
   const startTesting = () => {
     stopRequested.current = false;
@@ -239,6 +251,34 @@ export const PlaylistTester: React.FC<PlaylistTesterProps> = ({
       return matchesSearch && matchesFilter;
     });
   }, [channels, results, search, filter]);
+
+  // Reset pagination count back to ITEMS_PER_PAGE when parameters change
+  useEffect(() => {
+    setVisibleCount(ITEMS_PER_PAGE);
+  }, [search, filter, channels]);
+
+  const displayResults = useMemo(() => {
+    return filteredResults.slice(0, visibleCount);
+  }, [filteredResults, visibleCount]);
+
+  const hasMore = visibleCount < filteredResults.length;
+
+  useEffect(() => {
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting && hasMore) {
+          setVisibleCount((prev) => Math.min(prev + ITEMS_PER_PAGE, filteredResults.length));
+        }
+      },
+      { threshold: 0.1 }
+    );
+
+    if (observerTarget.current) {
+      observer.observe(observerTarget.current);
+    }
+
+    return () => observer.disconnect();
+  }, [hasMore, filteredResults.length]);
 
   return (
     <div className="flex flex-col h-full bg-slate-950 text-slate-200">
@@ -376,71 +416,80 @@ export const PlaylistTester: React.FC<PlaylistTesterProps> = ({
                   <p>No results found</p>
                 </div>
               ) : (
-                filteredResults.map((ch) => {
-                  const result = results[ch.id];
-                  const isActive = activeChannel?.id === ch.id;
-                  return (
-                    <div key={ch.id} className={`p-4 flex items-center justify-between hover:bg-slate-900/50 transition-colors ${isActive ? 'bg-indigo-950/20 border-l-4 border-indigo-505 pl-[12px]' : ''}`}>
-                      <div className="flex items-center gap-3 min-w-0">
-                        <div onClick={(e) => e.stopPropagation()} className="shrink-0 flex items-center justify-center pr-2">
-                           <input 
-                              type="checkbox" 
-                              checked={selectedChannels.has(ch.id)}
-                              onChange={(e) => toggleSelection(ch.id, e as any)}
-                              className="w-4 h-4 rounded border-slate-700 bg-slate-900 accent-indigo-500 cursor-pointer"
-                           />
+                <>
+                  {displayResults.map((ch) => {
+                    const result = results[ch.id];
+                    const isActive = activeChannel?.id === ch.id;
+                    return (
+                      <div key={ch.id} className={`p-4 flex items-center justify-between hover:bg-slate-900/50 transition-colors ${isActive ? 'bg-indigo-950/20 border-l-4 border-indigo-600 pl-[12px]' : ''}`}>
+                        <div className="flex items-center gap-3 min-w-0">
+                          <div onClick={(e) => e.stopPropagation()} className="shrink-0 flex items-center justify-center pr-2">
+                             <input 
+                                type="checkbox" 
+                                checked={selectedChannels.has(ch.id)}
+                                onChange={(e) => toggleSelection(ch.id, e as any)}
+                                className="w-4 h-4 rounded border-slate-700 bg-slate-900 accent-indigo-500 cursor-pointer"
+                             />
+                          </div>
+                          <div className="w-8 h-8 bg-slate-900 rounded border border-slate-800 flex items-center justify-center shrink-0 overflow-hidden">
+                            {ch.logo ? (
+                              <img src={ch.logo} alt="" className="w-full h-full object-contain" referrerPolicy="no-referrer" />
+                            ) : (
+                              <Tv className="w-4 h-4 text-slate-700" />
+                            )}
+                          </div>
+                          <div className="min-w-0">
+                            <p className={`text-sm font-medium truncate ${isActive ? 'text-indigo-400' : 'text-slate-200'}`}>{ch.name}</p>
+                            <p className="text-[10px] text-slate-500 truncate">{ch.url}</p>
+                          </div>
                         </div>
-                        <div className="w-8 h-8 bg-slate-900 rounded border border-slate-800 flex items-center justify-center shrink-0 overflow-hidden">
-                          {ch.logo ? (
-                            <img src={ch.logo} alt="" className="w-full h-full object-contain" referrerPolicy="no-referrer" />
-                          ) : (
-                            <Tv className="w-4 h-4 text-slate-700" />
+                        <div className="flex items-center gap-4 shrink-0 ml-4">
+                          {result?.status === 'working' && (
+                            <button
+                              onClick={() => setActiveChannel(ch)}
+                              className={`p-2 rounded-lg transition-all flex items-center gap-2 group/play ${isActive ? 'bg-indigo-600 text-white shadow' : 'bg-indigo-600/20 text-indigo-400 hover:bg-indigo-600 hover:text-white'}`}
+                              title="Play/Preview Channel"
+                            >
+                              <Play className="w-4 h-4 fill-current" />
+                              <span className="text-[10px] font-bold uppercase hidden sm:inline">{isActive ? 'Playing' : 'Play'}</span>
+                            </button>
+                          )}
+                          {result?.status === 'testing' && (
+                            <div className="flex items-center gap-2 text-indigo-400">
+                              <Loader2 className="w-4 h-4 animate-spin" />
+                              <span className="text-[10px] font-bold uppercase">Testing</span>
+                            </div>
+                          )}
+                          {result?.status === 'working' && !isActive && (
+                            <div className="flex items-center gap-2 text-green-400">
+                              <CheckCircle className="w-4 h-4" />
+                              <span className="text-[10px] font-bold uppercase">Working</span>
+                            </div>
+                          )}
+                          {result?.status === 'dead' && (
+                            <div className="flex items-center gap-2 text-red-400">
+                              <XCircle className="w-4 h-4" />
+                              <div className="flex flex-col items-end">
+                                <span className="text-[10px] font-bold uppercase">Dead</span>
+                                <span className="text-[8px] text-red-500/70">{result.error}</span>
+                              </div>
+                            </div>
+                          )}
+                          {!result && (
+                            <span className="text-[10px] font-bold uppercase text-slate-600">Pending</span>
                           )}
                         </div>
-                        <div className="min-w-0">
-                          <p className={`text-sm font-medium truncate ${isActive ? 'text-indigo-400' : 'text-slate-200'}`}>{ch.name}</p>
-                          <p className="text-[10px] text-slate-500 truncate">{ch.url}</p>
-                        </div>
                       </div>
-                      <div className="flex items-center gap-4 shrink-0 ml-4">
-                        {result?.status === 'working' && (
-                          <button
-                            onClick={() => setActiveChannel(ch)}
-                            className={`p-2 rounded-lg transition-all flex items-center gap-2 group/play ${isActive ? 'bg-indigo-600 text-white shadow' : 'bg-indigo-600/20 text-indigo-400 hover:bg-indigo-600 hover:text-white'}`}
-                            title="Play/Preview Channel"
-                          >
-                            <Play className="w-4 h-4 fill-current" />
-                            <span className="text-[10px] font-bold uppercase hidden sm:inline">{isActive ? 'Playing' : 'Play'}</span>
-                          </button>
-                        )}
-                        {result?.status === 'testing' && (
-                          <div className="flex items-center gap-2 text-indigo-400">
-                            <Loader2 className="w-4 h-4 animate-spin" />
-                            <span className="text-[10px] font-bold uppercase">Testing</span>
-                          </div>
-                        )}
-                        {result?.status === 'working' && !isActive && (
-                          <div className="flex items-center gap-2 text-green-400">
-                            <CheckCircle className="w-4 h-4" />
-                            <span className="text-[10px] font-bold uppercase">Working</span>
-                          </div>
-                        )}
-                        {result?.status === 'dead' && (
-                          <div className="flex items-center gap-2 text-red-400">
-                            <XCircle className="w-4 h-4" />
-                            <div className="flex flex-col items-end">
-                              <span className="text-[10px] font-bold uppercase">Dead</span>
-                              <span className="text-[8px] text-red-500/70">{result.error}</span>
-                            </div>
-                          </div>
-                        )}
-                        {!result && (
-                          <span className="text-[10px] font-bold uppercase text-slate-600">Pending</span>
-                        )}
-                      </div>
+                    );
+                  })}
+
+                  {/* Infinite loading threshold element */}
+                  {hasMore && (
+                    <div ref={observerTarget} className="flex justify-center p-4">
+                      <Loader2 className="w-6 h-6 animate-spin text-indigo-500" />
                     </div>
-                  );
-                })
+                  )}
+                </>
               )}
             </div>
           </div>
