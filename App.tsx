@@ -215,9 +215,25 @@ const App = () => {
     const fetchJson = async (endpoint: string): Promise<any> => {
       const fullUrl = `${cleanUrl}/player_api.php?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}&${endpoint}`;
       
+      const fetchWithTimeout = async (url: string, options: RequestInit = {}): Promise<Response> => {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 12000); // 12 seconds per strategy to keep failover quick
+        try {
+          const res = await window.fetch(url, {
+            ...options,
+            signal: controller.signal
+          });
+          clearTimeout(timeoutId);
+          return res;
+        } catch (err) {
+          clearTimeout(timeoutId);
+          throw err;
+        }
+      };
+
       // Strategy 0: Local Server Proxy (Highly secure, handles CORS + User-Agent bypass)
       try {
-        const res = await window.fetch(`/api/proxy/json?url=${encodeURIComponent(fullUrl)}`);
+        const res = await fetchWithTimeout(`/api/proxy/json?url=${encodeURIComponent(fullUrl)}`);
         if (res.ok) {
           const text = await res.text();
           return JSON.parse(text);
@@ -228,7 +244,7 @@ const App = () => {
       
       // Strategy 1: Direct Fetch
       try {
-        const res = await window.fetch(fullUrl);
+        const res = await fetchWithTimeout(fullUrl);
         if (res.ok) {
           const text = await res.text();
           return JSON.parse(text);
@@ -239,7 +255,7 @@ const App = () => {
 
       // Strategy 2: AllOrigins JSON API
       try {
-        const res = await window.fetch(`https://api.allorigins.win/get?url=${encodeURIComponent(fullUrl)}`);
+        const res = await fetchWithTimeout(`https://api.allorigins.win/get?url=${encodeURIComponent(fullUrl)}`);
         if (res.ok) {
           const json = await res.json();
           return JSON.parse(json.contents);
@@ -250,7 +266,7 @@ const App = () => {
 
       // Strategy 3: CorsProxy.io
       try {
-        const res = await window.fetch(`https://corsproxy.io/?${encodeURIComponent(fullUrl)}`);
+        const res = await fetchWithTimeout(`https://corsproxy.io/?${encodeURIComponent(fullUrl)}`);
         if (res.ok) {
           const text = await res.text();
           return JSON.parse(text);
@@ -261,7 +277,7 @@ const App = () => {
 
       // Strategy 4: CodeTabs Proxy
       try {
-        const res = await window.fetch(`https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(fullUrl)}`);
+        const res = await fetchWithTimeout(`https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(fullUrl)}`);
         if (res.ok) {
           const text = await res.text();
           return JSON.parse(text);
@@ -322,47 +338,13 @@ const App = () => {
         });
       });
 
-      // 3. Optional: Fetch movies (VOD)
-      try {
-        setLoadingStatus('Checking for movies...');
-        const vodCategories = await fetchJson('action=get_vod_categories');
-        const vodCategoryMap: Record<string, string> = {};
-        if (Array.isArray(vodCategories)) {
-          vodCategories.forEach((cat: any) => {
-            if (cat && cat.category_id !== undefined && cat.category_name) {
-              vodCategoryMap[String(cat.category_id)] = cat.category_name;
-            }
-          });
-        }
-
-        const vodStreams = await fetchJson('action=get_vod_streams');
-        if (Array.isArray(vodStreams)) {
-          vodStreams.forEach((stream: any) => {
-            if (!stream || !stream.stream_id) return;
-            
-            const catName = vodCategoryMap[String(stream.category_id)] || 'Other Movies';
-            groups.add(catName);
-
-            const ext = stream.container_extension || 'mp4';
-            channels.push({
-              id: `xtream_vod_${stream.stream_id}`,
-              name: stream.name || `Movie ${stream.stream_id}`,
-              logo: stream.stream_icon || undefined,
-              group: catName,
-              url: `${cleanUrl}/movie/${encodeURIComponent(username)}/${encodeURIComponent(password)}/${stream.stream_id}.${ext}`
-            });
-          });
-        }
-      } catch (e) {
-        console.warn("Could not fetch VOD streams/categories, continuing with live channels only", e);
-      }
-
       const sortedGroups = Array.from(groups).sort();
       const playlistData: PlaylistData = {
         channels,
         groups: sortedGroups
       };
 
+      // Set live channels immediately to allow instant usage
       setPlaylist(playlistData);
       setBadChannels(new Set()); // Reset bad channels
       setTesterResults({}); // Clear any previous tester results
@@ -393,6 +375,65 @@ const App = () => {
       setIsLoading(false);
       setLoadingStatus('');
       setError(null);
+
+      // 3. Background asynchronous fetching of movies (VOD) so it never blocks the primary interface
+      (async () => {
+        try {
+          console.log("Background check for movie categories started...");
+          const vodCategories = await fetchJson('action=get_vod_categories');
+          const vodCategoryMap: Record<string, string> = {};
+          if (Array.isArray(vodCategories)) {
+            vodCategories.forEach((cat: any) => {
+              if (cat && cat.category_id !== undefined && cat.category_name) {
+                vodCategoryMap[String(cat.category_id)] = cat.category_name;
+              }
+            });
+          }
+
+          console.log("Background fetch for movie streams started...");
+          const vodStreams = await fetchJson('action=get_vod_streams');
+          if (Array.isArray(vodStreams) && vodStreams.length > 0) {
+            const vodChannels: Channel[] = [];
+            const updatedGroups = new Set<string>(groups);
+
+            vodStreams.forEach((stream: any) => {
+              if (!stream || !stream.stream_id) return;
+              
+              const catName = vodCategoryMap[String(stream.category_id)] || 'Other Movies';
+              updatedGroups.add(catName);
+
+              const ext = stream.container_extension || 'mp4';
+              vodChannels.push({
+                id: `xtream_vod_${stream.stream_id}`,
+                name: stream.name || `Movie ${stream.stream_id}`,
+                logo: stream.stream_icon || undefined,
+                group: catName,
+                url: `${cleanUrl}/movie/${encodeURIComponent(username)}/${encodeURIComponent(password)}/${stream.stream_id}.${ext}`
+              });
+            });
+
+            // Safely append to the current playlist state
+            setPlaylist(prev => {
+              if (!prev) return prev;
+              
+              // Only append if movies are NOT already added to avoid duplication
+              const hasVod = prev.channels.some(ch => ch.id.startsWith('xtream_vod_'));
+              if (hasVod) return prev;
+
+              const mergedChannels = [...prev.channels, ...vodChannels];
+              const mergedGroups = Array.from(updatedGroups).sort();
+
+              return {
+                channels: mergedChannels,
+                groups: mergedGroups
+              };
+            });
+            console.log(`Background VOD fetch successfully loaded ${vodStreams.length} movies.`);
+          }
+        } catch (e) {
+          console.warn("Could not fetch VOD streams/categories as background process, continuing with live channels only", e);
+        }
+      })();
     } catch (err: any) {
       console.warn("Xtream JSON API failed, falling back to direct M3U download URL...", err);
       
