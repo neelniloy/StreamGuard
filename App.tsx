@@ -348,7 +348,6 @@ const App = () => {
       setPlaylist(playlistData);
       setBadChannels(new Set()); // Reset bad channels
       setTesterResults({}); // Clear any previous tester results
-      setCurrentChannel(channels[0] || null);
 
       // Reset Filters
       setSearch('');
@@ -692,7 +691,7 @@ const App = () => {
   const handleAutoFailover = (failedId: string) => {
     if (!currentChannel || !playlist) return;
 
-    // Mark current as bad
+    // Mark current as bad (styles as offline in the list)
     markChannelAsBad(failedId);
 
     // Find all alternatives for the same channel name
@@ -702,14 +701,12 @@ const App = () => {
     const nextAlt = alternatives.find(ch => !badChannels.has(ch.id) && ch.id !== failedId);
 
     if (nextAlt) {
-      setError(`Stream failed. Trying alternative server...`);
+      setError(`Stream connection failed. Automatically switching to alternative server...`);
       setCurrentChannel(nextAlt);
-      // Auto-clear the error toast after 3 seconds
-      setTimeout(() => setError(null), 3000);
+      setTimeout(() => setError(null), 4000);
     } else {
-      setError(`All servers failed for ${currentChannel.name}. Moving to next channel...`);
-      handleNavigate('next');
-      setTimeout(() => setError(null), 3000);
+      setError(`All available server streams are currently offline for "${currentChannel.name}".`);
+      setTimeout(() => setError(null), 5000);
     }
   };
 

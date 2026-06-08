@@ -31,7 +31,16 @@ export const PlaylistTester: React.FC<PlaylistTesterProps> = ({
   const [isTesting, setIsTesting] = useState(false);
   const [concurrency, setConcurrency] = useState(5);
   const [search, setSearch] = useState('');
+  const [localSearch, setLocalSearch] = useState('');
   const [filter, setFilter] = useState<'all' | 'working' | 'dead'>('all');
+
+  // Debounce the update to parent's search state by 250ms
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      setSearch(localSearch);
+    }, 250);
+    return () => clearTimeout(handler);
+  }, [localSearch]);
   const [progress, setProgress] = useState(0);
   
   const [selectedChannels, setSelectedChannels] = useState<Set<string>>(new Set());
@@ -313,8 +322,8 @@ export const PlaylistTester: React.FC<PlaylistTesterProps> = ({
               <input 
                 type="text" 
                 placeholder="Search channels..." 
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
+                value={localSearch}
+                onChange={(e) => setLocalSearch(e.target.value)}
                 className="w-full bg-slate-950 border border-slate-800 rounded-lg pl-10 pr-4 py-2 text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none"
               />
             </div>

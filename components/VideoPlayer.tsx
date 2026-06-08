@@ -32,8 +32,11 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   const [isPlaying, setIsPlaying] = useState(false);
   const [showControls, setShowControls] = useState(true);
   const [showServerMenu, setShowServerMenu] = useState(false);
+  const [playbackError, setPlaybackError] = useState<string | null>(null);
+  const [retryTrigger, setRetryTrigger] = useState(0);
 
   useEffect(() => {
+    setPlaybackError(null);
     if (!channel || !videoRef.current) return;
 
     const video = videoRef.current;
@@ -56,6 +59,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
 
     const handleMediaError = () => {
        setIsLoading(false);
+       setPlaybackError("Playback failed. This stream is offline, contains invalid stream credentials, or format is not supported by your browser.");
        if (onAutoFailover) {
          onAutoFailover(id);
        } else {
@@ -176,7 +180,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         mpegtsRef.current = null;
       }
     };
-  }, [channel, onError, onAutoFailover]);
+  }, [channel, onError, onAutoFailover, retryTrigger]);
 
   const handleInteraction = () => {
     setShowControls(true);
@@ -224,6 +228,37 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         onPlay={() => setIsPlaying(true)}
         onPause={() => setIsPlaying(false)}
       />
+      
+      {playbackError && !isLoading && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-950/95 text-slate-300 p-8 text-center z-20">
+          <AlertCircle className="w-12 h-12 text-red-500 mb-4 animate-pulse shrink-0" />
+          <h3 className="text-lg font-bold text-white mb-2">Stream Offline</h3>
+          <p className="max-w-md text-xs text-slate-400 mb-6">{playbackError}</p>
+          <div className="flex gap-4">
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                setPlaybackError(null);
+                setRetryTrigger(prev => prev + 1);
+              }}
+              className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-semibold transition-all shadow-md active:scale-95"
+            >
+              Retry Connection
+            </button>
+            {onShowList && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onShowList();
+                }}
+                className="px-5 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs font-semibold transition-all border border-slate-700 active:scale-95"
+              >
+                Choose Another Channel
+              </button>
+            )}
+          </div>
+        </div>
+      )}
       
       {isLoading && (
         <div className="absolute inset-0 flex items-center justify-center bg-black/50 z-10 pointer-events-none">

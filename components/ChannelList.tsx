@@ -44,6 +44,22 @@ export const ChannelList: React.FC<ChannelListProps> = ({
   const [isGroupMenuOpen, setIsGroupMenuOpen] = useState(false);
   const firstChannelRef = useRef<HTMLButtonElement>(null);
   
+  // Local state for debounced search input to prevent lagging on huge lists
+  const [localSearch, setLocalSearch] = useState(search);
+
+  // Sync local search when search prop updates
+  useEffect(() => {
+    setLocalSearch(search);
+  }, [search]);
+
+  // Debounce the update to parent's search state by 250ms
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      setSearch(localSearch);
+    }, 250);
+    return () => clearTimeout(handler);
+  }, [localSearch, setSearch]);
+
   // Pagination State
   const [visibleCount, setVisibleCount] = useState(ITEMS_PER_PAGE);
   const observerTarget = useRef<HTMLDivElement>(null);
@@ -101,8 +117,8 @@ export const ChannelList: React.FC<ChannelListProps> = ({
           <input
             type="text"
             placeholder="Search channels..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            value={localSearch}
+            onChange={(e) => setLocalSearch(e.target.value)}
             className="w-full bg-slate-800 text-slate-200 text-sm pl-9 pr-4 py-2.5 rounded-lg border border-slate-700 focus:outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500 transition-all"
           />
         </div>
