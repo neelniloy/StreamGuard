@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Channel } from '../types';
-import { Search, MonitorPlay, Tv, Filter, Loader2, Eye, EyeOff, AlertCircle } from 'lucide-react';
+import { Search, MonitorPlay, Tv, Filter, Loader2, Eye, EyeOff, AlertCircle, Star } from 'lucide-react';
 
 interface ChannelListProps {
   channels: Channel[]; // Pre-filtered channels
@@ -11,9 +11,14 @@ interface ChannelListProps {
   setSelectedGroup: (g: string) => void;
   hideBadChannels: boolean;
   setHideBadChannels: (b: boolean) => void;
+  showOnlyFavorites: boolean;
+  setShowOnlyFavorites: (b: boolean) => void;
   onSelect: (channel: Channel) => void;
   currentChannelId?: string;
   badChannels?: Set<string>;
+  favorites?: Set<string>;
+  onToggleFavorite?: (id: string) => void;
+  testerResults?: Record<string, { id: string; status: 'pending' | 'testing' | 'working' | 'dead'; error?: string }>;
 }
 
 const ITEMS_PER_PAGE = 50;
@@ -27,9 +32,14 @@ export const ChannelList: React.FC<ChannelListProps> = ({
   setSelectedGroup,
   hideBadChannels,
   setHideBadChannels,
+  showOnlyFavorites,
+  setShowOnlyFavorites,
   onSelect, 
   currentChannelId, 
-  badChannels = new Set() 
+  badChannels = new Set(),
+  favorites = new Set(),
+  onToggleFavorite,
+  testerResults = {}
 }) => {
   const [isGroupMenuOpen, setIsGroupMenuOpen] = useState(false);
   const firstChannelRef = useRef<HTMLButtonElement>(null);
@@ -140,6 +150,14 @@ export const ChannelList: React.FC<ChannelListProps> = ({
             >
                 {hideBadChannels ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
             </button>
+
+            <button 
+                onClick={() => setShowOnlyFavorites(!showOnlyFavorites)}
+                className={`flex items-center justify-center px-3 py-2 rounded border transition-colors focus:ring-2 focus:ring-indigo-500 ${showOnlyFavorites ? 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30' : 'bg-slate-800 text-slate-400 border-slate-700 hover:text-white'}`}
+                title="Show Only Favorites"
+            >
+                <Star className={`w-4 h-4 ${showOnlyFavorites ? 'fill-yellow-400' : ''}`} />
+            </button>
         </div>
       </div>
 
@@ -155,40 +173,59 @@ export const ChannelList: React.FC<ChannelListProps> = ({
           <div className="divide-y divide-slate-800/50 pb-4">
             {displayChannels.map((ch, index) => {
               const isBad = badChannels.has(ch.id);
+              const isFavorite = favorites.has(ch.id);
               return (
-                <button
-                  key={ch.id}
-                  ref={index === 0 ? firstChannelRef : null}
-                  onClick={() => onSelect(ch)}
-                  className={`w-full text-left px-4 py-4 flex items-center gap-3 hover:bg-slate-800/50 transition-colors group focus:bg-slate-800 focus:outline-none focus:ring-inset focus:ring-2 focus:ring-indigo-500 ${currentChannelId === ch.id ? 'bg-slate-800 border-l-4 border-indigo-500 pl-[14px]' : 'border-l-4 border-transparent pl-[14px]'} ${isBad ? 'opacity-50' : ''}`}
-                >
-                  <div className="w-10 h-10 bg-slate-950 rounded-md flex items-center justify-center shrink-0 overflow-hidden border border-slate-800/50 relative">
-                    {ch.logo ? (
-                      <img src={ch.logo} alt={ch.name} className="w-full h-full object-contain" onError={(e) => e.currentTarget.style.display = 'none'} />
-                    ) : (
-                      <Tv className="w-5 h-5 text-slate-700 group-hover:text-slate-500 transition-colors" />
-                    )}
-                    {isBad && (
-                        <div className="absolute inset-0 bg-slate-900/80 flex items-center justify-center">
-                            <AlertCircle className="w-5 h-5 text-red-500" />
-                        </div>
-                    )}
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <p className={`text-base font-medium truncate flex items-center gap-2 ${currentChannelId === ch.id ? 'text-indigo-400' : isBad ? 'text-red-400 decoration-slate-500' : 'text-slate-200'}`}>
-                      {ch.name}
-                      {isBad && <span className="text-[9px] uppercase border border-red-500/50 text-red-500 px-1 rounded bg-red-500/10">Offline</span>}
-                    </p>
-                    <div className="flex items-center gap-2 mt-0.5">
-                       <span className="text-[11px] text-slate-500 truncate bg-slate-950 px-1.5 py-0.5 rounded border border-slate-800/50">
-                          {ch.group || 'N/A'}
-                       </span>
+                <div key={ch.id} className="relative group/item">
+                  <button
+                    ref={index === 0 ? firstChannelRef : null}
+                    onClick={() => onSelect(ch)}
+                    className={`w-full text-left px-4 py-4 flex items-center gap-3 hover:bg-slate-800/50 transition-colors group focus:bg-slate-800 focus:outline-none focus:ring-inset focus:ring-2 focus:ring-indigo-500 ${currentChannelId === ch.id ? 'bg-slate-800 border-l-4 border-indigo-500 pl-[14px]' : 'border-l-4 border-transparent pl-[14px]'} ${isBad ? 'opacity-50' : ''}`}
+                  >
+                    <div className="w-10 h-10 bg-slate-950 rounded-md flex items-center justify-center shrink-0 overflow-hidden border border-slate-800/50 relative">
+                      {ch.logo ? (
+                        <img src={ch.logo} alt={ch.name} className="w-full h-full object-contain" referrerPolicy="no-referrer" onError={(e) => e.currentTarget.style.display = 'none'} />
+                      ) : (
+                        <Tv className="w-5 h-5 text-slate-700 group-hover:text-slate-500 transition-colors" />
+                      )}
+                      {isBad && (
+                          <div className="absolute inset-0 bg-slate-900/80 flex items-center justify-center">
+                              <AlertCircle className="w-5 h-5 text-red-500" />
+                          </div>
+                      )}
                     </div>
-                  </div>
-                  {currentChannelId === ch.id && (
-                    <MonitorPlay className="w-5 h-5 text-indigo-500 ml-auto shrink-0 animate-pulse" />
-                  )}
-                </button>
+                    <div className="min-w-0 flex-1">
+                      <p className={`text-base font-medium truncate flex items-center gap-2 ${currentChannelId === ch.id ? 'text-indigo-400' : isBad ? 'text-red-400 decoration-slate-500' : 'text-slate-200'}`}>
+                        {ch.name}
+                        {isBad && <span className="text-[9px] uppercase border border-red-500/50 text-red-500 px-1 rounded bg-red-500/10">Offline</span>}
+                      </p>
+                      <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                         <span className="text-[11px] text-slate-500 truncate bg-slate-950 px-1.5 py-0.5 rounded border border-slate-800/50">
+                            {ch.group || 'N/A'}
+                         </span>
+                         {testerResults[ch.id]?.status === 'working' && (
+                           <span className="text-[9px] font-bold uppercase border border-green-500/30 text-green-400 bg-green-500/10 px-1.5 py-0.5 rounded tracking-wider flex items-center gap-1.5 shadow-sm">
+                             <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse shrink-0"></span>
+                             Verified
+                           </span>
+                         )}
+                      </div>
+                    </div>
+                    {currentChannelId === ch.id && (
+                      <MonitorPlay className="w-5 h-5 text-indigo-500 ml-auto shrink-0 animate-pulse" />
+                    )}
+                  </button>
+                  
+                  <button 
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onToggleFavorite?.(ch.id);
+                    }}
+                    className={`absolute right-2 top-1/2 -translate-y-1/2 p-2 rounded-full transition-all ${isFavorite ? 'text-yellow-400 opacity-100' : 'text-slate-600 opacity-0 group-hover/item:opacity-100 hover:text-yellow-400 hover:bg-slate-800'}`}
+                    title={isFavorite ? "Remove from Favorites" : "Add to Favorites"}
+                  >
+                    <Star className={`w-4 h-4 ${isFavorite ? 'fill-yellow-400' : ''}`} />
+                  </button>
+                </div>
               );
             })}
             

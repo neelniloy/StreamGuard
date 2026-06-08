@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import Hls from 'hls.js';
+import mpegts from 'mpegts.js';
 import { Loader2, List, ChevronLeft, Server, AlertCircle, SkipBack, SkipForward } from 'lucide-react';
 import { Channel } from '../types';
 
@@ -10,7 +11,7 @@ interface VideoPlayerProps {
   onNext?: () => void;
   onPrev?: () => void;
   onError: (msg: string) => void;
-  onMarkBad?: (id: string) => void;
+  onAutoFailover?: (id: string) => void;
   onShowList?: () => void;
 }
 
@@ -21,11 +22,12 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   onNext,
   onPrev,
   onError, 
-  onMarkBad, 
+  onAutoFailover, 
   onShowList 
 }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const hlsRef = useRef<Hls | null>(null);
+  const mpegtsRef = useRef<mpegts.Player | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
   const [showControls, setShowControls] = useState(true);
@@ -41,24 +43,84 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     setIsPlaying(false);
     setShowServerMenu(false); // Close menu on channel change
 
+    // Clean up any existing players first
+    if (hlsRef.current) {
+      hlsRef.current.destroy();
+      hlsRef.current = null;
+    }
+    if (mpegtsRef.current) {
+      mpegtsRef.current.unload();
+      mpegtsRef.current.destroy();
+      mpegtsRef.current = null;
+    }
+
     const handleMediaError = () => {
        setIsLoading(false);
-       if (onMarkBad) onMarkBad(id);
-       onError("Playback failed. Stream is offline or not supported.");
+       if (onAutoFailover) {
+         onAutoFailover(id);
+       } else {
+         onError("Playback failed. Stream is offline or not supported.");
+       }
     };
 
-    if (Hls.isSupported()) {
-      if (hlsRef.current) {
-        hlsRef.current.destroy();
-      }
+    // Determine the stream source URL
+    // Absolute rules: if it starts with http://, or if it is a .ts file/livestream, route it through our high-performance local proxy!
+    let finalUrl = url;
+    const isHttp = url.startsWith('http://');
+    const isTsStream = url.toLowerCase().includes('.ts') || url.includes('/live/') || url.includes('/movie/');
 
+    if (isHttp || isTsStream) {
+      finalUrl = `/api/stream?url=${encodeURIComponent(url)}`;
+    }
+
+    // Playback strategy
+    if (isTsStream && mpegts.isSupported()) {
+      try {
+        const mpegtsPlayer = mpegts.createPlayer({
+          type: 'mpegts',
+          isLive: true,
+          url: finalUrl
+        }, {
+          enableWorker: true,
+          lazyLoad: false,
+          stashInitialSize: 128 * 1024 // optimal responsive stash size
+        });
+
+        mpegtsRef.current = mpegtsPlayer;
+        mpegtsPlayer.attachMediaElement(video);
+        mpegtsPlayer.load();
+        
+        mpegtsPlayer.on(mpegts.Events.ERROR, (type, detail, info) => {
+          console.error("mpegts.js Error:", type, detail, info);
+          handleMediaError();
+        });
+
+        mpegtsPlayer.on(mpegts.Events.LOADING_COMPLETE, () => {
+          setIsLoading(false);
+        });
+
+        mpegtsPlayer.on(mpegts.Events.METADATA_ARRIVED, () => {
+          setIsLoading(false);
+        });
+
+        video.play().then(() => {
+          setIsLoading(false);
+        }).catch(() => {
+          setIsPlaying(false);
+        });
+
+      } catch (err) {
+        console.error("Failed to initialize mpegts.js:", err);
+        handleMediaError();
+      }
+    } else if (Hls.isSupported()) {
       const hls = new Hls({
         enableWorker: true,
         lowLatencyMode: true,
       });
 
       hlsRef.current = hls;
-      hls.loadSource(url);
+      hls.loadSource(finalUrl);
       hls.attachMedia(video);
 
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
@@ -72,7 +134,6 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         if (data.fatal) {
           switch (data.type) {
             case Hls.ErrorTypes.NETWORK_ERROR:
-              // Try to recover network error once
               hls.startLoad();
               break;
             case Hls.ErrorTypes.MEDIA_ERROR:
@@ -86,24 +147,36 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         }
       });
     } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-      video.src = url;
-      video.addEventListener('loadedmetadata', () => {
+      video.src = finalUrl;
+      const handleMetadata = () => {
         setIsLoading(false);
         video.play().catch(() => setIsPlaying(false));
-      });
+      };
+      
+      video.addEventListener('loadedmetadata', handleMetadata);
       video.addEventListener('error', handleMediaError);
+
+      return () => {
+        video.removeEventListener('loadedmetadata', handleMetadata);
+        video.removeEventListener('error', handleMediaError);
+      };
     } else {
-      onError("HLS is not supported in this browser.");
+      onError("Streaming format has no supported players in this browser.");
       setIsLoading(false);
     }
 
     return () => {
       if (hlsRef.current) {
         hlsRef.current.destroy();
+        hlsRef.current = null;
       }
-      video.removeEventListener('error', handleMediaError);
+      if (mpegtsRef.current) {
+        mpegtsRef.current.unload();
+        mpegtsRef.current.destroy();
+        mpegtsRef.current = null;
+      }
     };
-  }, [channel, onError, onMarkBad]);
+  }, [channel, onError, onAutoFailover]);
 
   const handleInteraction = () => {
     setShowControls(true);

@@ -1,6 +1,11 @@
 import { Channel, PlaylistData } from '../types';
 
 export const parseM3U = (content: string): PlaylistData => {
+  // Remove BOM if present
+  if (content.charCodeAt(0) === 0xFEFF) {
+    content = content.slice(1);
+  }
+
   const lines = content.split(/\r?\n/);
   const channels: Channel[] = [];
   const groups = new Set<string>();
@@ -12,39 +17,31 @@ export const parseM3U = (content: string): PlaylistData => {
   let currentGroupDirective: string | null = null;
 
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i].trim();
+    let line = lines[i].trim();
 
     if (!line) continue;
 
     if (line.startsWith('#')) {
       const lowerLine = line.toLowerCase();
       
+      // Basic info line: #EXTINF:duration attributes,Title
       if (lowerLine.startsWith('#extinf:')) {
-        // Reset per-channel metadata
+        // Reset per-channel metadata for a new entry
         currentName = null;
         currentLogo = null;
         currentGroup = null;
 
-        // Strategy: standard M3U is "#EXTINF:duration attributes,Title"
-        // 1. Split into metadata part and title part based on the *first* comma
-        //    (We assume the comma separating duration/attrs from title is the first one, 
-        //    or we might parse attributes and assume everything after is title)
-        
         const firstCommaIndex = line.indexOf(',');
         if (firstCommaIndex !== -1) {
           // Title is everything after the first comma
           const titlePart = line.substring(firstCommaIndex + 1).trim();
           if (titlePart) currentName = titlePart;
 
-          // Attributes are before the comma (excluding #EXTINF:duration)
-          // We need to parse key="value" pairs.
+          // Attributes are before the comma
           const metaPart = line.substring(0, firstCommaIndex);
           
           // Regex to match key="value" OR key=value
-          // Matches:
-          // 1. key (alphanumeric+dashes)
-          // 2. =
-          // 3. "value" (quoted) OR non-whitespace-non-comma (unquoted)
+          // Handles cases like: tvg-logo="url" group-title="Group Name"
           const attrRegex = /([a-zA-Z0-9-_]+)=("[^"]*"|[^,\s]+)/g;
           
           let match;
@@ -57,24 +54,42 @@ export const parseM3U = (content: string): PlaylistData => {
               val = val.slice(1, -1);
             }
 
-            if (key === 'tvg-logo') currentLogo = val;
+            if (key === 'tvg-logo' || key === 'logo') currentLogo = val;
             if (key === 'group-title') currentGroup = val;
-            // Sometimes tvg-name is used if the title part is missing/garbage
             if (key === 'tvg-name' && !currentName) currentName = val;
           }
         } else {
-            // Fallback if no comma found (rare)
+            // Fallback if no comma found: split by colon
             const parts = line.split(':');
-            if (parts.length > 1) currentName = parts[1].trim();
+            if (parts.length > 2) {
+                // assume #EXTINF:duration metadata...
+                currentName = parts.slice(2).join(':').trim();
+            } else if (parts.length > 1) {
+                currentName = parts[1].trim();
+            }
         }
       } 
+      // Group directive: #EXTGRP: GroupName
       else if (lowerLine.startsWith('#extgrp:')) {
-        // Handle #EXTGRP: GroupName
         currentGroupDirective = line.substring(8).trim();
+      }
+      // Skip common HLS Master Playlist tags to avoid adding segments as channels
+      else if (
+        lowerLine.startsWith('#ext-x-') || 
+        lowerLine.startsWith('#ext-m3u') || 
+        lowerLine.startsWith('#ext-x-stream-inf')
+      ) {
+        continue;
       }
     } else {
       // It's a URL (assuming it doesn't start with #)
       const url = line;
+      
+      // Skip if the line doesn't look like a URL (very BASIC heuristic)
+      // Some parsers require http://, but we'll be more lenient
+      if (!url.includes('://') && !url.includes('.') && !url.startsWith('/')) {
+        continue;
+      }
       
       // Determine final properties
       const name = currentName || `Channel ${channels.length + 1}`;
@@ -95,9 +110,7 @@ export const parseM3U = (content: string): PlaylistData => {
       
       groups.add(group);
 
-      // Reset state that shouldn't persist to the next channel implicitly
-      // (Note: EXTGRP usually applies to the next channel, but some formats imply grouping. 
-      // We'll keep currentGroupDirective active until changed? No, safest is reset to avoid bleed.)
+      // Reset state for next channel
       currentName = null;
       currentLogo = null;
       currentGroup = null;
