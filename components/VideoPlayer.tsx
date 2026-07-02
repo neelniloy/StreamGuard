@@ -1,7 +1,7 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import Hls from 'hls.js';
 import mpegts from 'mpegts.js';
-import { Loader2, List, ChevronLeft, Server, AlertCircle, SkipBack, SkipForward } from 'lucide-react';
+import { Loader2, List, ChevronLeft, Server, AlertCircle, SkipBack, SkipForward, Copy, ExternalLink } from 'lucide-react';
 import { Channel } from '../types';
 
 interface VideoPlayerProps {
@@ -34,6 +34,19 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   const [showServerMenu, setShowServerMenu] = useState(false);
   const [playbackError, setPlaybackError] = useState<string | null>(null);
   const [retryTrigger, setRetryTrigger] = useState(0);
+  const [copiedDirect, setCopiedDirect] = useState(false);
+  const [copiedProxy, setCopiedProxy] = useState(false);
+  const [useProxy, setUseProxy] = useState(true);
+
+  const handleMediaError = useCallback((customMsg?: string) => {
+     setIsLoading(false);
+     setPlaybackError(customMsg || "Playback failed. This stream is offline, contains invalid credentials, or format is not supported by your browser.");
+     if (channel && onAutoFailover) {
+       onAutoFailover(channel.id);
+     } else {
+       onError(customMsg || "Playback failed. Stream is offline or not supported.");
+     }
+  }, [channel, onAutoFailover, onError]);
 
   useEffect(() => {
     setPlaybackError(null);
@@ -57,23 +70,14 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       mpegtsRef.current = null;
     }
 
-    const handleMediaError = () => {
-       setIsLoading(false);
-       setPlaybackError("Playback failed. This stream is offline, contains invalid stream credentials, or format is not supported by your browser.");
-       if (onAutoFailover) {
-         onAutoFailover(id);
-       } else {
-         onError("Playback failed. Stream is offline or not supported.");
-       }
-    };
-
     // Determine the stream source URL
-    // Absolute rules: if it starts with http://, or if it is a .ts file/livestream, route it through our high-performance local proxy!
+    // Absolute rules: if useProxy is true, starts with http://, or if it is a .m3u8/HLS stream, or if it is a .ts file/livestream, route it through our high-performance local proxy!
     let finalUrl = url;
     const isHttp = url.startsWith('http://');
+    const isHls = url.toLowerCase().includes('.m3u8');
     const isTsStream = url.toLowerCase().includes('.ts') || url.includes('/live/') || url.includes('/movie/');
 
-    if (isHttp || isTsStream) {
+    if (useProxy && (isHttp || isHls || isTsStream)) {
       finalUrl = `/api/stream?url=${encodeURIComponent(url)}`;
     }
 
@@ -87,16 +91,21 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         }, {
           enableWorker: true,
           lazyLoad: false,
-          stashInitialSize: 128 * 1024 // optimal responsive stash size
-        });
+          stashInitialSize: 32 * 1024, // Optimized initial buffer for lightning-fast playback
+          liveBufferLatencyChasing: true, // Auto catch-up to minimize lag
+          maxReaderPageSize: 512 * 1024 // Increased reader page size for fluid decoding
+        } as any);
 
         mpegtsRef.current = mpegtsPlayer;
         mpegtsPlayer.attachMediaElement(video);
         mpegtsPlayer.load();
         
         mpegtsPlayer.on(mpegts.Events.ERROR, (type, detail, info) => {
-          console.error("mpegts.js Error:", type, detail, info);
-          handleMediaError();
+          console.warn("mpegts.js live stream warning:", type, detail, info);
+          // Only abort for unrecoverable Network connections. Let media recovery play through soft decoding errors/warns.
+          if (type === mpegts.ErrorTypes.NETWORK_ERROR) {
+            handleMediaError("Stream network connection lost. The IPTV provider might be offline or rate-limiting.");
+          }
         });
 
         mpegtsPlayer.on(mpegts.Events.LOADING_COMPLETE, () => {
@@ -121,6 +130,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       const hls = new Hls({
         enableWorker: true,
         lowLatencyMode: true,
+        backBufferLength: 60
       });
 
       hlsRef.current = hls;
@@ -145,7 +155,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
               break;
             default:
               hls.destroy();
-              handleMediaError();
+              handleMediaError("A critical HLS playback error occurred.");
               break;
           }
         }
@@ -158,11 +168,10 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       };
       
       video.addEventListener('loadedmetadata', handleMetadata);
-      video.addEventListener('error', handleMediaError);
+      video.addEventListener('error', () => handleMediaError("Native video engine failed to play this stream."));
 
       return () => {
         video.removeEventListener('loadedmetadata', handleMetadata);
-        video.removeEventListener('error', handleMediaError);
       };
     } else {
       onError("Streaming format has no supported players in this browser.");
@@ -180,7 +189,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         mpegtsRef.current = null;
       }
     };
-  }, [channel, onError, onAutoFailover, retryTrigger]);
+  }, [channel, handleMediaError, retryTrigger, useProxy]);
 
   const handleInteraction = () => {
     setShowControls(true);
@@ -227,35 +236,157 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         poster={channel.logo}
         onPlay={() => setIsPlaying(true)}
         onPause={() => setIsPlaying(false)}
+        onCanPlay={() => setIsLoading(false)}
+        onError={(e) => {
+          const err = e.currentTarget.error;
+          console.error("HTML5 Video Native Error:", err);
+          if (err) {
+            if (err.code === err.MEDIA_ERR_DECODE) {
+              handleMediaError("HTML5 Decoding Error: The browser failed to decode the video. Some broadcast streams use Dolby AC-3 sound or MPEG-2 formats that standard web browsers block. Toggle proxy modes or try direct streaming below.");
+            } else if (err.code === err.MEDIA_ERR_SRC_NOT_SUPPORTED) {
+              handleMediaError("Unsupported Stream Source: The link was blocked, timed out, or returned an unplayable stream. Try switching connection modes below.");
+            } else {
+              handleMediaError(`Native Player Error (Code ${err.code}). Toggle proxy modes below to attempt recovery.`);
+            }
+          }
+        }}
       />
       
       {playbackError && !isLoading && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-950/95 text-slate-300 p-8 text-center z-20">
-          <AlertCircle className="w-12 h-12 text-red-500 mb-4 animate-pulse shrink-0" />
-          <h3 className="text-lg font-bold text-white mb-2">Stream Offline</h3>
-          <p className="max-w-md text-xs text-slate-400 mb-6">{playbackError}</p>
-          <div className="flex gap-4">
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                setPlaybackError(null);
-                setRetryTrigger(prev => prev + 1);
-              }}
-              className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-semibold transition-all shadow-md active:scale-95"
-            >
-              Retry Connection
-            </button>
-            {onShowList && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-950/98 text-slate-300 p-6 md:p-8 text-center z-20 overflow-y-auto">
+          <AlertCircle className="w-12 h-12 text-indigo-500 mb-3 animate-pulse shrink-0" />
+          <h3 className="text-lg font-bold text-white mb-1">Internal Player Resilience Center</h3>
+          
+          <div className="max-w-xl text-xs text-slate-400 bg-slate-900 border border-slate-800 p-4 rounded-lg mb-6 text-left space-y-2">
+            <p className="font-semibold text-indigo-400">Stream Connection Diagnose State:</p>
+            <p className="text-slate-300 italic">"{playbackError}"</p>
+            <p className="pt-2">
+              Our player contains **dual connection modes** to bypass browser constraints. Mixed content blocks occur because modern browsers refuse raw HTTP streams inside secure HTTPS interfaces.
+            </p>
+          </div>
+
+          <div className="flex flex-col gap-4 w-full max-w-md mb-2">
+            <div>
+              <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-2 text-left">Configure Internal Player Mode:</p>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setUseProxy(true);
+                    setPlaybackError(null);
+                    setRetryTrigger(prev => prev + 1);
+                  }}
+                  className={`p-3 rounded-lg border text-left transition-all ${
+                    useProxy 
+                      ? 'bg-indigo-950/40 border-indigo-500 text-white shadow-md shadow-indigo-500/10' 
+                      : 'bg-slate-900/60 border-slate-800 hover:border-slate-700 text-slate-400'
+                  }`}
+                >
+                  <p className="text-xs font-bold block mb-0.5">Stream Proxy (On)</p>
+                  <p className="text-[9px] text-slate-400 leading-tight">Bypasses ISP CORS blocks, HTTPS security filters & User-Agent blocks</p>
+                </button>
+
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setUseProxy(false);
+                    setPlaybackError(null);
+                    setRetryTrigger(prev => prev + 1);
+                  }}
+                  className={`p-3 rounded-lg border text-left transition-all ${
+                    !useProxy 
+                      ? 'bg-emerald-950/40 border-emerald-500 text-white shadow-md shadow-emerald-500/10' 
+                      : 'bg-slate-900/60 border-slate-800 hover:border-slate-700 text-slate-400'
+                  }`}
+                >
+                  <p className="text-xs font-bold block mb-0.5">Stream Direct</p>
+                  <p className="text-[9px] text-slate-400 leading-tight">Hits source directly from your browser engine (best for latency)</p>
+                </button>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap justify-center gap-2 border-t border-slate-900 pt-4">
               <button
                 onClick={(e) => {
                   e.stopPropagation();
-                  onShowList();
+                  setPlaybackError(null);
+                  setRetryTrigger(prev => prev + 1);
                 }}
-                className="px-5 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs font-semibold transition-all border border-slate-700 active:scale-95"
+                className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-semibold transition-all shadow-md active:scale-95 flex items-center gap-1.5"
               >
-                Choose Another Channel
+                <Loader2 className="w-3.5 h-3.5 animate-spin-slow" />
+                Retry Web Connection
               </button>
-            )}
+              
+              <a
+                href={channel.url}
+                target="_blank"
+                rel="noreferrer"
+                className="px-5 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded-lg text-xs font-semibold transition-all shadow-md active:scale-95 flex items-center gap-1.5 border border-slate-705"
+              >
+                <ExternalLink className="w-3.5 h-3.5" />
+                VLC Hardware Fallback
+              </a>
+
+              {onShowList && (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onShowList();
+                  }}
+                  className="px-5 py-2.5 bg-slate-900 hover:bg-slate-850 text-slate-400 hover:text-slate-200 rounded-lg text-xs font-semibold transition-all border border-slate-800 active:scale-95"
+                >
+                  Choose Another
+                </button>
+              )}
+            </div>
+
+            <div className="border-t border-slate-850 pt-4 mt-2 text-left space-y-2.5">
+              <p className="text-xs font-semibold text-slate-400">Stream Resource Direct Access urls:</p>
+              
+              {/* Direct Server URL */}
+              <div className="flex items-center gap-2 bg-slate-900 border border-slate-800 p-2 rounded-lg justify-between">
+                <div className="min-w-0 flex-1">
+                  <p className="text-[9px] text-slate-500 font-bold uppercase tracking-wider">Direct Source URL</p>
+                  <p className="text-[10px] text-slate-400 font-mono truncate">{channel.url}</p>
+                </div>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    navigator.clipboard.writeText(channel.url);
+                    setCopiedDirect(true);
+                    setTimeout(() => setCopiedDirect(false), 2000);
+                  }}
+                  className="px-2.5 py-1.5 bg-slate-800 text-slate-300 rounded hover:bg-slate-700 text-[10px] font-medium shrink-0 flex items-center gap-1 border border-slate-700"
+                >
+                  <Copy className="w-3.5 h-3.5" />
+                  {copiedDirect ? "Copied!" : "Copy"}
+                </button>
+              </div>
+
+              {/* Secure Proxy Stream URL */}
+              <div className="flex items-center gap-2 bg-slate-900 border border-slate-800 p-2 rounded-lg justify-between">
+                <div className="min-w-0 flex-1">
+                  <p className="text-[9px] text-indigo-400 font-bold uppercase tracking-wider">Cloud Resilient Proxy URL (Recommended)</p>
+                  <p className="text-[10px] text-slate-400 font-mono truncate">
+                    {`${window.location.origin}/api/stream?url=${encodeURIComponent(channel.url)}`}
+                  </p>
+                </div>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    const proxyUrl = `${window.location.origin}/api/stream?url=${encodeURIComponent(channel.url)}`;
+                    navigator.clipboard.writeText(proxyUrl);
+                    setCopiedProxy(true);
+                    setTimeout(() => setCopiedProxy(false), 2000);
+                  }}
+                  className="px-2.5 py-1.5 bg-slate-800 text-slate-300 rounded hover:bg-slate-700 text-[10px] font-medium shrink-0 flex items-center gap-1 border border-slate-700"
+                >
+                  <Copy className="w-3.5 h-3.5" />
+                  {copiedProxy ? "Copied!" : "Copy"}
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}

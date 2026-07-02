@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { Play, CheckCircle, XCircle, Loader2, Search, Filter, Trash2, Download, AlertTriangle, ChevronLeft, Tv } from 'lucide-react';
 import { Channel } from '../types';
-import Hls from 'hls.js';
 import { VideoPlayer } from './VideoPlayer';
 
 interface PlaylistTesterProps {
@@ -76,68 +75,28 @@ export const PlaylistTester: React.FC<PlaylistTesterProps> = ({
   }, [results, channels]);
 
   const testChannel = useCallback(async (channel: Channel): Promise<TestResult> => {
-    return new Promise((resolve) => {
-      const video = document.createElement('video');
-      video.muted = true;
-      video.style.display = 'none';
-      
-      let hls: Hls | null = null;
-      let timeout: any = null;
- 
-      const cleanup = () => {
-        if (timeout) clearTimeout(timeout);
-        if (hls) {
-          hls.destroy();
-        }
-        video.src = '';
-        video.load();
-      };
-
-      timeout = setTimeout(() => {
-        cleanup();
-        resolve({ id: channel.id, status: 'dead', error: 'Timeout' });
-      }, 15000); // 15s timeout per channel
-
-      if (Hls.isSupported()) {
-        hls = new Hls({
-          enableWorker: false,
-          xhrSetup: (xhr) => {
-            xhr.withCredentials = false;
-          }
-        });
-        
-        hls.loadSource(channel.url);
-        hls.attachMedia(video);
-        
-        // Wait for at least one fragment to be loaded - much more reliable than just manifest parsed
-        hls.on(Hls.Events.FRAG_LOADED, () => {
-          cleanup();
-          resolve({ id: channel.id, status: 'working' });
-        });
-
-        hls.on(Hls.Events.ERROR, (_, data) => {
-          if (data.fatal) {
-            cleanup();
-            resolve({ id: channel.id, status: 'dead', error: data.details });
-          }
-        });
-      } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-        video.src = channel.url;
-        // For native, wait for canplay or playing
-        const onCanPlay = () => {
-          video.removeEventListener('canplay', onCanPlay);
-          cleanup();
-          resolve({ id: channel.id, status: 'working' });
+    try {
+      // Query the server-side streaming API tester.
+      // It bypasses browser Mixed Content block (HTTP stream inside HTTPS page) and CORS rules.
+      // The server will verify the connection and abort download immediately, saving bandwidth.
+      const response = await fetch(`/api/proxy/test?url=${encodeURIComponent(channel.url)}`);
+      if (response.ok) {
+        const data = await response.json();
+        return {
+          id: channel.id,
+          status: data.status,
+          error: data.error
         };
-        video.addEventListener('canplay', onCanPlay);
-        video.addEventListener('error', () => {
-          cleanup();
-          resolve({ id: channel.id, status: 'dead', error: 'Native error' });
-        });
       } else {
-        resolve({ id: channel.id, status: 'dead', error: 'HLS not supported' });
+        return {
+          id: channel.id,
+          status: 'dead',
+          error: `HTTP ${response.status}`
+        };
       }
-    });
+    } catch (e: any) {
+      return { id: channel.id, status: 'dead', error: e?.message || 'Connection failed' };
+    }
   }, []);
 
   const processQueue = useCallback(async () => {
