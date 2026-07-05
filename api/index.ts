@@ -158,7 +158,7 @@ app.get("/api/proxy/test", (req, res) => {
 
 // Helper to rewrite .m3u8 content, converting relative segment/sub-playlist URLs to go through our proxy
 function rewriteM3U8(content: string, baseUrl: string, reqOrigin: string): string {
-  const lines = content.split(/\r?\n/);
+  const lines = content.split(/\r\n|\r|\n/);
   
   let baseParsed: URL | null = null;
   try {

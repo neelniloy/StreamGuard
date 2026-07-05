@@ -6,7 +6,7 @@ export const parseM3U = (content: string): PlaylistData => {
     content = content.slice(1);
   }
 
-  const lines = content.split(/\r?\n/);
+  const lines = content.split(/\r\n|\r|\n/);
   const channels: Channel[] = [];
   const groups = new Set<string>();
 
