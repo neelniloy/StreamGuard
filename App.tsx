@@ -157,7 +157,14 @@ const App = () => {
     // Use a slight delay to allow UI to update loading state before heavy parsing
     setTimeout(() => {
       try {
+        if (!content || typeof content !== 'string') {
+          throw new Error("The playlist content is empty or invalid. This can happen if the download failed or returned an empty response.");
+        }
+
         const trimmedContent = content.trim();
+        if (!trimmedContent) {
+          throw new Error("The playlist content is empty.");
+        }
         
         // Basic HTML detection
         if (
@@ -192,9 +199,9 @@ const App = () => {
             }
           }
         }
-      } catch (err) {
+      } catch (err: any) {
         console.error("Parsing error:", err);
-        setError("Failed to parse playlist structure.");
+        setError(`Failed to parse playlist structure: ${err.message || err}`);
       } finally {
         setLoadingStatus('');
         setIsLoading(false);
@@ -546,7 +553,9 @@ const App = () => {
         const res = await window.fetch(`https://api.allorigins.win/get?url=${encodeURIComponent(u)}`);
         if (res.ok) {
           const json = await res.json();
-          return { text: json.contents, resolvedUrl: json.status.url };
+          if (json && typeof json.contents === 'string') {
+            return { text: json.contents, resolvedUrl: json.status?.url };
+          }
         }
       } catch (e) {
         console.warn("AllOrigins JSON failed, falling back to raw...");
@@ -555,7 +564,9 @@ const App = () => {
       // Fallback to raw mode
       const res = await window.fetch(`https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      return { text: await res.text(), resolvedUrl: undefined };
+      const text = await res.text();
+      if (!text) throw new Error("Received empty response from raw proxy");
+      return { text, resolvedUrl: undefined };
     };
 
     try {
