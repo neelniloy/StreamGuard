@@ -73,9 +73,16 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     // Determine the stream source URL
     // Absolute rules: if useProxy is true, starts with http://, or if it is a .m3u8/HLS stream, or if it is a .ts file/livestream, route it through our high-performance local proxy!
     let finalUrl = url;
+    const urlLower = url.toLowerCase();
     const isHttp = url.startsWith('http://');
-    const isHls = url.toLowerCase().includes('.m3u8');
-    const isTsStream = url.toLowerCase().includes('.ts') || url.includes('/live/') || url.includes('/movie/');
+    const isHls = urlLower.includes('.m3u8') || 
+                  urlLower.includes('m3u8') || 
+                  urlLower.includes('/play') || 
+                  urlLower.includes('stream=') || 
+                  urlLower.includes('workers.dev');
+    const isTsStream = urlLower.includes('.ts') || 
+                       urlLower.includes('/live/') || 
+                       urlLower.includes('/movie/');
 
     if (useProxy && (isHttp || isHls || isTsStream)) {
       finalUrl = `/api/stream?url=${encodeURIComponent(url)}`;

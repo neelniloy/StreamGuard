@@ -525,11 +525,28 @@ const App = () => {
     setLoadingStatus('Connecting...');
     setError(null);
 
+    // Sanitization: trim leading and trailing spaces/newlines
+    let cleanedUrl = url.trim();
+
+    // Auto-convert GitHub web URLs to raw files
+    // E.g. https://github.com/IPTVFlixBD/BDIX-IPTV-playlist/blob/main/BDIX.m3u -> https://raw.githubusercontent.com/IPTVFlixBD/BDIX-IPTV-playlist/main/BDIX.m3u
+    if (cleanedUrl.includes('github.com/')) {
+      if (cleanedUrl.includes('/blob/')) {
+        cleanedUrl = cleanedUrl
+          .replace('github.com', 'raw.githubusercontent.com')
+          .replace('/blob/', '/');
+      } else if (cleanedUrl.includes('/raw/')) {
+        cleanedUrl = cleanedUrl
+          .replace('github.com', 'raw.githubusercontent.com')
+          .replace('/raw/', '/');
+      }
+    }
+
     // Intercept Xtream Codes URLs
-    const isXtreamUrl = url.includes('/get.php?') && url.includes('username=') && url.includes('password=');
+    const isXtreamUrl = cleanedUrl.includes('/get.php?') && cleanedUrl.includes('username=') && cleanedUrl.includes('password=');
     if (isXtreamUrl) {
       try {
-        const urlObj = new URL(url);
+        const urlObj = new URL(cleanedUrl);
         const cleanUrl = `${urlObj.protocol}//${urlObj.host}`;
         const username = urlObj.searchParams.get('username') || '';
         const password = urlObj.searchParams.get('password') || '';
@@ -573,10 +590,10 @@ const App = () => {
       // Strategy 0: Local Server Security Proxy (Bypasses CORS + Mixed Content + sets custom User-Agent)
       try {
         setLoadingStatus('Streaming via Security Proxy...');
-        const res = await window.fetch(`/api/proxy/plaintext?url=${encodeURIComponent(url)}`);
+        const res = await window.fetch(`/api/proxy/plaintext?url=${encodeURIComponent(cleanedUrl)}`);
         if (res.ok) {
           const text = await res.text();
-          addToHistory({ name: customName || url.split('/').pop() || 'Remote Playlist', url, resolvedUrl: undefined, type: 'url' });
+          addToHistory({ name: customName || cleanedUrl.split('/').pop() || 'Remote Playlist', url: cleanedUrl, resolvedUrl: undefined, type: 'url' });
           processPlaylist(text);
           return;
         }
@@ -586,8 +603,8 @@ const App = () => {
 
       // Strategy 1: Direct Fetch
       try {
-        const { text, resolvedUrl } = await safeFetch(url);
-        addToHistory({ name: customName || url.split('/').pop() || 'Remote Playlist', url, resolvedUrl, type: 'url' });
+        const { text, resolvedUrl } = await safeFetch(cleanedUrl);
+        addToHistory({ name: customName || cleanedUrl.split('/').pop() || 'Remote Playlist', url: cleanedUrl, resolvedUrl, type: 'url' });
         processPlaylist(text);
         return;
       } catch (e) {
@@ -597,8 +614,8 @@ const App = () => {
       // Strategy 2: AllOrigins
       try {
         setLoadingStatus('Routing via Proxy 1...');
-        const { text, resolvedUrl } = await fetchViaAllOrigins(url);
-        addToHistory({ name: customName || url.split('/').pop() || 'Remote Playlist', url, resolvedUrl, type: 'url' });
+        const { text, resolvedUrl } = await fetchViaAllOrigins(cleanedUrl);
+        addToHistory({ name: customName || cleanedUrl.split('/').pop() || 'Remote Playlist', url: cleanedUrl, resolvedUrl, type: 'url' });
         processPlaylist(text);
         return;
       } catch (e) {
@@ -608,8 +625,8 @@ const App = () => {
       // Strategy 3: CorsProxy.io
       try {
         setLoadingStatus('Routing via Proxy 2...');
-        const { text, resolvedUrl } = await safeFetch(`https://corsproxy.io/?${encodeURIComponent(url)}`);
-        addToHistory({ name: customName || url.split('/').pop() || 'Remote Playlist', url, resolvedUrl, type: 'url' });
+        const { text, resolvedUrl } = await safeFetch(`https://corsproxy.io/?${encodeURIComponent(cleanedUrl)}`);
+        addToHistory({ name: customName || cleanedUrl.split('/').pop() || 'Remote Playlist', url: cleanedUrl, resolvedUrl, type: 'url' });
         processPlaylist(text);
         return;
       } catch (e) {
@@ -619,8 +636,8 @@ const App = () => {
       // Strategy 4: CodeTabs Proxy
       try {
         setLoadingStatus('Routing via Proxy 3...');
-        const { text, resolvedUrl } = await safeFetch(`https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`);
-        addToHistory({ name: customName || url.split('/').pop() || 'Remote Playlist', url, resolvedUrl, type: 'url' });
+        const { text, resolvedUrl } = await safeFetch(`https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(cleanedUrl)}`);
+        addToHistory({ name: customName || cleanedUrl.split('/').pop() || 'Remote Playlist', url: cleanedUrl, resolvedUrl, type: 'url' });
         processPlaylist(text);
         return;
       } catch (e) {
